@@ -1,0 +1,183 @@
+---
+title: "F/A Top Performers"
+author: "Voxize - Brendan Keaton"
+date: "2023-02-28"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+#Download all libraries I use often
+library(dplyr)
+library(ggplot2)
+library(RColorBrewer)
+library(plyr)
+library(rvest)
+library(hash)
+library(stringr)
+library(parallel)
+library(foreach)
+library(ranger)
+library(palmerpenguins)
+library(tidyverse)
+library(kableExtra)
+library(purrr)
+library(xml2)
+library(tidytable)
+```
+
+```{r}
+### DATA CLEANING ###
+
+#Download the csv file from my PC
+faList <- read.csv('C:/Users/brkea/Desktop/All/Projects/Valorant/FreeAgents/FA_List.csv', header = 0)
+#Rename columns
+colnames(faList) <- c("player", "Twitter", "Roles", "VLR")
+
+#Create function that will be used later. Specifically this function removes all characters after the LAST '/'
+#in a link (this is to later normalize links provided in the CSV, as they are all different time spans, or sometimes no
+# time span at all).
+Timespan <- function() {
+faList$VLR <- sub("/[^/]+$", "", faList$VLR)
+}
+
+#Using above function, test if link is in correct (has 6 '/s' instead of 5.) if it is incorrect, fix it.
+faList$VLR <- ifelse(str_count(faList$VLR, "/")==6, Timespan(), faList$VLR)
+
+#adds "matches" into the url at correct spot to be used later.
+faList$VLR <- gsub('^(.{26})(.*)$', '\\1matches/\\2', faList$VLR)
+
+# Make all names lowercase, otherwise VLR will not work-- example Neat vs neat in matches vs provided in document
+faList$Player <- tolower(faList$player)
+
+#selects first x rows to use as test (time reasons)
+testdf <- faList[1:100, ]
+```
+
+```{r}
+### DATA COLLECTION FOR EACH PLAYER ###
+
+# Function that uses each players VLR link to scan the page for other URLs, then subsets by only match links
+# Follows this up by calculating the average 
+
+# Function that collects data for a player from a specific match, given a URL of a match, and a player name
+DataForMatch <- function(URL, currPlayer) {
+  # Read the given URL into a readable format for R
+  matchPage <- read_html(URL)
+  
+# Collect team names from match page
+teamNames <- ".mod-both"
+teamNames <- matchPage %>% html_nodes(teamNames) %>% html_text()
+teamNames <- gsub("[\t\n]", "", teamNames)
+
+# Collect all player names from the team (set to names lowercase, same as above)
+playerNames <- ".mod-player .text-of"
+playerNames <- matchPage %>% html_nodes(playerNames) %>% html_text()
+playerNames <- gsub("[\t\n]", "", playerNames)
+playerNames <- tolower(playerNames)
+
+# Collect all ratings for players
+Rating <- ".mod-agents+ .mod-stat .stats-sq"
+Rating <- matchPage %>% html_nodes(Rating) %>% html_text()
+Rating <- gsub("[\t\n]", "", Rating)
+#Keep ONLY ratings from all maps page, not each individual map
+Rating <- substr(Rating, 0, 4)
+
+#Put player names and Rating into dataframe
+df <- data.frame(playerNames, Rating)
+#Remove all whitespace
+df$playerNames <- trimws(df$playerNames)
+#Keep only player/ratings of current play
+df <- subset(df, df$playerNames == currPlayer)
+#Keep only the relevant Rating (similar to above issue)
+df <- df[2,2]
+return(df)
+}
+
+DataForPlayer <- function(URL, currPlayer) {
+  
+  #Read matches page and collect the whole page of URLs
+  pg <- read_html(URL)
+  matches <- html_attr(html_nodes(pg, "a"), "href")
+  
+  matches <- as.data.frame(matches)
+  
+  #Remove the slash at beginning of all match URLs
+  matches$matches <- gsub("^.{0,1}", "", matches$matches)
+  
+  #Remove any blank/NA URLs (I dont know why VLR lets the happen, but it does)
+  matches <- matches[-which(matches$matches == ""), ]
+  matches <- as.data.frame(matches)
+  matches <- na.omit(matches)
+  
+  # Remove any link that does not begin with a digit. I found that this is the best way
+  # To find match URLs, rather than links to things like twitter or discords.
+  # This is * NOT FUTURE PROOF, AND COULD VERY EASILY BREAK AT SOME POINT IN THE FUTURE*
+  # ******** WARNING **********
+  
+  matches$isMatch <- grepl('^1|^2|^3|^4|^5|^6|^7|^8|^9', matches$matches)
+  
+  # Only keep links that are matches
+  matches <- subset(matches, isMatch == TRUE)
+  
+  # Rename Columns and add beginning of URL so they are usable
+  colnames(matches) <- c("endUrl", "isMatch")
+  startUrl <- "https://www.vlr.gg/"
+  matches$fullUrl <- paste0(startUrl, matches$endUrl)
+  
+  # I dont remember what this does in all honesty, but looks like its just cleaning the df and removing
+  # un-needed columns
+  matches <- as.data.frame(matches[1:nrow(matches), 3])
+  colnames(matches) <- "matchURLs"
+  
+  # Function that grabs the enemy teams name (and only the enemy, do not change this function
+  # or move it anywhere)
+  oppName <- function(URL) {
+  matchesPage <- read_html(URL)
+  oppNames <- ".mod-right .m-item-team-name"
+  oppNames <- matchesPage %>% html_nodes(oppNames) %>% html_text()
+  oppNames <- gsub("[\t\n]", "", oppNames)
+    return(oppNames)
+  }
+  
+  # Similar to above, a function that retrieves the match dates from the page
+  matchDate <- function(URL) {
+  matchesPage <- read_html(URL)
+  date1 <- ".m-item-date div"
+  date1 <- matchesPage %>% html_nodes(date1) %>% html_text()
+  date1 <- gsub("[\t\n]", "", date1)
+    return(date1)
+  }
+  
+  # Create new columns for matches df
+  matches$opponent <- oppName(URL)
+  matches$rating <- NA
+  matches$player <- currPlayer
+  matches$date <- matchDate(URL)
+
+  # for loop that iterates through all links for each player, and retrieves their data.
+  # I tried mapply, lapply, etc, but all of them did not like the format for the above function
+  # and/or couldn't work w a vectorized set of URLs.
+  for (i in 1:nrow(matches)) {
+    matches$rating[i] <- DataForMatch(matches$matchURLs[i], currPlayer)
+  }
+  return(matches)
+}
+
+# Create new data frame with player and rating
+df <- data.frame(matrix(ncol = 2, nrow = 0))
+colnames(df) <- c('Player', 'Rating')
+
+# run the function DataForPlayer through each of the main VLR pages provided in the original dataset.
+
+# **************************************************************************************************
+# ****** CHANGE testdf BELOW TO faList IF YOU WANT TO RUN SCRIPT ON AN ENTIRE DATA SET *************
+# **************************************************************************************************
+
+df <- t(mapply(FUN = DataForPlayer, testdf$VLR, testdf$Player))
+df <- as.data.frame(df)
+
+# Data comes in through a dataframe of lists, so unnest each of these lists and make the dataframe work correctly. 
+df <- unnest(df)
+
+```
