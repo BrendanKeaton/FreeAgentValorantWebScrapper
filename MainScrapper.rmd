@@ -4,7 +4,6 @@ author: "Voxize - Brendan Keaton"
 date: "2023-02-28"
 output: html_document
 ---
-
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 #Download all libraries I use often
@@ -29,6 +28,11 @@ library(tidytable)
 ```{r}
 ### DATA CLEANING ###
 
+#Choose what top X teams you want to appear in final dataset:
+topX <- 50
+#Input earliest date allowed for players (Y-m-d):
+dateLimit <- "12/15/2022"
+dateLimit <- as.Date(dateLimit, "%m/%d/%Y")
 #Download the csv file from my PC
 faList <- read.csv('C:/Users/brkea/Desktop/All/Projects/Valorant/FreeAgents/FA_List.csv', header = 0)
 #Rename columns
@@ -51,7 +55,7 @@ faList$VLR <- gsub('^(.{26})(.*)$', '\\1matches/\\2', faList$VLR)
 faList$Player <- tolower(faList$player)
 
 #selects first x rows to use as test (time reasons)
-testdf <- faList[1:100, ]
+#testdf <- faList[230:275, ]
 ```
 
 ```{r}
@@ -62,6 +66,7 @@ testdf <- faList[1:100, ]
 
 # Function that collects data for a player from a specific match, given a URL of a match, and a player name
 DataForMatch <- function(URL, currPlayer) {
+  
   # Read the given URL into a readable format for R
   matchPage <- read_html(URL)
   
@@ -161,6 +166,7 @@ DataForPlayer <- function(URL, currPlayer) {
   for (i in 1:nrow(matches)) {
     matches$rating[i] <- DataForMatch(matches$matchURLs[i], currPlayer)
   }
+  print(currPlayer)
   return(matches)
 }
 
@@ -174,7 +180,7 @@ colnames(df) <- c('Player', 'Rating')
 # ****** CHANGE testdf BELOW TO faList IF YOU WANT TO RUN SCRIPT ON AN ENTIRE DATA SET *************
 # **************************************************************************************************
 
-df <- t(mapply(FUN = DataForPlayer, testdf$VLR, testdf$Player))
+df <- t(mapply(FUN = DataForPlayer, faList$VLR, faList$Player))
 df <- as.data.frame(df)
 
 # Data comes in through a dataframe of lists, so unnest each of these lists and make the dataframe work correctly. 
